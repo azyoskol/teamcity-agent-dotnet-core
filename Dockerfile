@@ -1,131 +1,100 @@
-FROM debian:buster
-#LABEL maintainer "Jacek Kleczkowski <jacek@ksoft.biz>"
+# Default arguments
+ARG dockerComposeLinuxComponentVersion='1.28.5'
+ARG dockerLinuxComponentVersion='5:19.03.14~3-0~ubuntu'
+ARG dotnetLibs='libc6 libgcc1 libgssapi-krb5-2 libicu66 libssl1.1 libstdc++6 zlib1g'
+ARG dotnetLinuxComponent='https://download.visualstudio.microsoft.com/download/pr/022d9abf-35f0-4fd5-8d1c-86056df76e89/477f1ebb70f314054129a9f51e9ec8ec/dotnet-sdk-2.2.207-linux-x64.tar.gz'
+ARG dotnetLinuxComponentSHA512='9d70b4a8a63b66da90544087199a0f681d135bf90d43ca53b12ea97cc600a768b0a3d2f824cfe27bd3228e058b060c63319cd86033be8b8d27925283f99de958'
+ARG gitLinuxComponentVersion='1:2.25.1-1ubuntu3'
+ARG p4Version='2020.2-2093246'
+ARG repo='https://hub.docker.com/r/jetbrains/'
+ARG teamcityMinimalAgentImage='jetbrains/teamcity-minimal-agent:latest'
 
-#RUN apt-get remove --purge -y $BUILD_PACKAGES $(apt-mark showauto) && rm -rf /var/lib/apt/lists/*
+# The list of required arguments
+# ARG dotnetLinuxComponent
+# ARG dotnetLinuxComponentSHA512
+# ARG teamcityMinimalAgentImage
+# ARG dotnetLibs
+# ARG gitLinuxComponentVersion
+# ARG dockerComposeLinuxComponentVersion
+# ARG dockerLinuxComponentVersion
+
+
+
+FROM ${teamcityMinimalAgentImage}
+
+USER root
+
+COPY run-docker.sh /services/run-docker.sh
+
+ARG dotnetCoreLinuxComponentVersion
+
+    # Opt out of the telemetry feature
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=true \
+    # Disable first time experience
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true \
+    # Configure Kestrel web server to bind to port 80 when present
+    ASPNETCORE_URLS=http://+:80 \
+    # Enable detection of running in a container
+    DOTNET_RUNNING_IN_CONTAINER=true \
+    # Enable correct mode for dotnet watch (only mode supported in a container)
+    DOTNET_USE_POLLING_FILE_WATCHER=true \
+    # Skip extraction of XML docs - generally not useful within an image/container - helps perfomance
+    NUGET_XMLDOC_MODE=skip \
+    GIT_SSH_VARIANT=ssh \
+    DOTNET_SDK_VERSION=${dotnetCoreLinuxComponentVersion}
+
+ARG dotnetLinuxComponent
+ARG dotnetLinuxComponentSHA512
+ARG dotnetLibs
+ARG gitLinuxComponentVersion
+ARG dockerComposeLinuxComponentVersion
+ARG dockerLinuxComponentVersion
+ARG p4Version
+
+RUN apt-get update && \
+    apt-get install -y git=${gitLinuxComponentVersion} mercurial apt-transport-https software-properties-common && \
+    # https://github.com/goodwithtech/dockle/blob/master/CHECKPOINT.md#dkl-di-0005
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    apt-key adv --fetch-keys https://package.perforce.com/perforce.pubkey && \
+    (. /etc/os-release && \
+      echo "deb http://package.perforce.com/apt/$ID $VERSION_CODENAME release" > \
+      /etc/apt/sources.list.d/perforce.list ) && \
+    apt-get update && \
+    (. /etc/os-release && apt-get install -y helix-cli="${p4Version}~$VERSION_CODENAME" ) && \
+    # https://github.com/goodwithtech/dockle/blob/master/CHECKPOINT.md#dkl-di-0005
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add - && \
+    add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" && \
+    apt-cache policy docker-ce && \
+    apt-get update && \
+    apt-get install -y  docker-ce=${dockerLinuxComponentVersion}-$(lsb_release -cs) \
+                        docker-ce-cli=${dockerLinuxComponentVersion}-$(lsb_release -cs) \
+                        containerd.io=1.2.13-2 \
+                        systemd && \
+    systemctl disable docker && \
+    sed -i -e 's/\r$//' /services/run-docker.sh && \
+    curl -SL "https://github.com/docker/compose/releases/download/${dockerComposeLinuxComponentVersion}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose && \
+    apt-get install -y --no-install-recommends ${dotnetLibs} && \
+    # https://github.com/goodwithtech/dockle/blob/master/CHECKPOINT.md#dkl-di-0005
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    curl -SL ${dotnetLinuxComponent} --output /tmp/dotnet.tar.gz && \
+    echo "${dotnetLinuxComponentSHA512} */tmp/dotnet.tar.gz" | sha512sum -c -; \
+    mkdir -p /usr/share/dotnet && \
+    tar -zxf /tmp/dotnet.tar.gz -C /usr/share/dotnet && \
+    rm /tmp/dotnet.tar.gz && \
+    find /usr/share/dotnet -name "*.lzma" -type f -delete && \
+    ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet && \
+# Trigger .NET CLI first run experience by running arbitrary cmd to populate local package cache
+    dotnet help && \
+# Other
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    chown -R buildagent:buildagent /services && \
+    usermod -aG docker buildagent
+
+# A better fix for TW-52939 Dockerfile build fails because of aufs
 VOLUME /var/lib/docker
-VOLUME /opt/buildagent/work
-VOLUME /opt/buildagent/logs
-VOLUME /data/teamcity_agent/conf
-VOLUME /opt/buildagent/plugins
 
-ENV DOCKER_HOST "unix:///var/run/docker.sock"
-ENV DOCKER_BIN "/usr/bin/docker"
-ENV DOCKER_IN_DOCKER start
-ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+COPY daemon.json /etc/docker/ 
 
-EXPOSE 9090
-# RUN  cat /opt/buildagent/bin/agent.sh
-ENTRYPOINT [ "/bin/bash","/run-services.sh" ]
-
-WORKDIR /
-
-RUN apt-get update 
-
-RUN apt-get install -y \
-    wget curl mc \
-    unzip \
-    git \
-    mercurial \
-    openjdk-11-jdk \
-    apt-transport-https \
-    apt-utils \
-    lxc \
-    iptables \
-    ca-certificates \
-    ssh \
-    docker.io \
-    --no-install-recommends && \
-    # add-apt-repository ppa:ansible/ansible-2.9 && \
-    wget -q https://packages.microsoft.com/config/debian/10/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb && \
-    #wget -q https://packages.microsoft.com/config/ubuntu/18.04/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb && \
-    dpkg -i /tmp/packages-microsoft-prod.deb && rm -f /tmp/packages-microsoft-prod.deb && \
-    apt-get update 
-
-# # install build tools
-RUN DEBIAN_FRONTEND=noninteractive DOTNET_CLI_TELEMETRY_OPTOUT=1 apt-get install -y \
-    --no-install-recommends \
-    # # install mono-devel
-    mono-devel mono-xbuild maven \
-    libmono-addins-* \
-    build-essential \
-    libssl-dev \
-    libffi-dev \
-    python-dev \ 
-#    python-venv \
-    #install ruby & packer
-    ruby p7zip-full
-
-# # install web tools which are required for "dotnet publish" command
-# # install nodejs, gcc, g++ build-essantials
-RUN curl -sL https://deb.nodesource.com/setup_12.x | bash -  && \
-    apt-get install -y nodejs gcc g++ build-essential && \
-    npm i -g npm bower gulp @angular/cli
-
-# Install yarn after installing npm
-RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -  && \
-    echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list && \
-    apt-get update && apt-get install yarn -y
-
-# install ansible & maven
-#RUN add-apt-repository ppa:ansible/ansible-2.9 && \
-#RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    libkrb5-dev \
-    python3-pip \
-    krb5-user 
-
-#RUN python3 -m pip install --upgrade pip 
-#RUN python3 -m pip install ansible 
-
-RUN python3 -m pip install --upgrade pip setuptools && \
-    python3 -m pip install ansible pywinrm pywinrm[kerberos] kerberos requests requests-kerberos 
-
-RUN ansible-galaxy collection install \
-    community.kubernetes \
-    community.crypto \
-    community.general \
-    community.libvirt
-
-#installing packer
-RUN wget -q -O /tmp/packer.zip  https://releases.hashicorp.com/packer/1.4.5/packer_1.4.5_linux_amd64.zip && \
-    unzip /tmp/packer.zip -d /usr/bin && \ 
-    # rm -f -r /tmp/* && \
-    chmod 0755 /usr/bin/packer && \
-    # installing build agent
-    curl -o /tmp/buildAgent.zip -k https://teamcity.ksoft.biz/update/buildAgent.zip && \
-    unzip /tmp/buildAgent.zip -d /opt/buildagent && \
-    mkdir -p /data/teamcity_agent/conf && \
-    cp -r /opt/buildagent/conf /opt/buildagent/conf_dist && \
-    # ls -al /opt/buildagent/conf_dist/ && \
-    rm -f -r /tmp/*
-COPY root/ /
-RUN chmod 0755 /run-*.sh /services/*
-
-#ARG CORE_VERSIONS="dotnet-sdk-2.1 dotnet-sdk-2.2 dotnet-sdk-3.0 dotnet-sdk-3.1"
-ARG CORE_VERSIONS="dotnet-sdk-5.0"
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y ${CORE_VERSIONS}
-
-# Install PowerShell global tool
-ENV POWERSHELL_VERSION=7.1.0 \
-    POWERSHELL_DISTRIBUTION_CHANNEL=PSDocker-DotnetCoreSDK-Debian-10
-
-RUN curl -SL --output PowerShell.Linux.x64.$POWERSHELL_VERSION.nupkg https://pwshtool.blob.core.windows.net/tool/$POWERSHELL_VERSION/PowerShell.Linux.x64.$POWERSHELL_VERSION.nupkg \
-    # && powershell_sha512='0fb0167e13560371bffec38a4a87bf39377fa1a5cc39b3a078ddec8803212bede73e5821861036ba5c345bd55c74703134c9b55c49385f87dae9e2de9239f5d9' \
-    # && echo "$powershell_sha512  PowerShell.Linux.x64.$POWERSHELL_VERSION.nupkg" | sha512sum -c - \
-    && mkdir -p /usr/share/powershell \
-    && dotnet tool install --add-source / --tool-path /usr/share/powershell --version $POWERSHELL_VERSION PowerShell.Linux.x64 \
-    && rm PowerShell.Linux.x64.$POWERSHELL_VERSION.nupkg \
-    && ln -s /usr/share/powershell/pwsh /usr/bin/pwsh \
-    && chmod 755 /usr/share/powershell/pwsh \
-    # To reduce image size, remove the copy nupkg that nuget keeps.
-    && find /usr/share/powershell -print | grep -i '.*[.]nupkg$' | xargs rm \
-    && rm -f -r /tmp/*
-
-#dodanie kubectl
-RUN curl -LO https://storage.googleapis.com/kubernetes-release/release/`curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt`/bin/linux/amd64/kubectl
-
-
-RUN apt-get upgrade -y && \
-    apt-get clean autoclean && \
-    rm -rf /var/lib/{apt,dpkg,cache,log}/
+USER buildagent
 
